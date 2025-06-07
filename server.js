@@ -13,18 +13,72 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Create directories with cleanup
+// Create directories
 const uploadsDir = './uploads';
 const outputDir = './output';
+const fontDir = './fonts';
 
-// Cleanup function for old files (runs every 5 minutes)
+[uploadsDir, outputDir, fontDir].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+});
+
+// Font file path
+const fontFile = path.join(fontDir, 'Frontage-Condensed-Bold.ttf');
+
+// Text processing functions
+function createChannelNameDrawText(channelName, fontColor, fontFile) {
+    const cleanChannelName = channelName
+        .replace(/['"]/g, '')
+        .replace(/[:]/g, ' ')
+        .replace(/[,]/g, ' ')
+        .replace(/[\[\]]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    return [
+        // Outer glow
+        `drawtext=text='${cleanChannelName}':fontsize=40:fontcolor=white@0.08:x=(w-tw)/2:y=(h/2)+400:fontfile='${fontFile}':borderw=10:bordercolor=white@0.05`,
+        // Medium glow
+        `drawtext=text='${cleanChannelName}':fontsize=40:fontcolor=white@0.15:x=(w-tw)/2:y=(h/2)+400:fontfile='${fontFile}':borderw=6:bordercolor=white@0.1`,
+        // Inner glow
+        `drawtext=text='${cleanChannelName}':fontsize=40:fontcolor=white@0.3:x=(w-tw)/2:y=(h/2)+400:fontfile='${fontFile}':borderw=3:bordercolor=white@0.2`,
+        // Main text
+        `drawtext=text='${cleanChannelName}':fontsize=40:fontcolor=${fontColor}:x=(w-tw)/2:y=(h/2)+400:fontfile='${fontFile}':borderw=1:bordercolor=white@0.4`
+    ].join(',');
+}
+
+function createTranscriptDrawText(text, enableExpr, fontSize, fontColor, fontFile, yOffset) {
+    if (!text) return '';
+
+    const cleanText = text
+        .replace(/['"]/g, '')
+        .replace(/[:]/g, ' ')
+        .replace(/[,]/g, ' ')
+        .replace(/[\[\]]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    return [
+        // Outer glow
+        `drawtext=text='${cleanText}':fontsize=${fontSize}:fontcolor=white@0.08:x=(w-tw)/2:y=(h/2)${yOffset}:fontfile='${fontFile}':borderw=20:bordercolor=white@0.05:enable='${enableExpr}'`,
+        // Medium glow
+        `drawtext=text='${cleanText}':fontsize=${fontSize}:fontcolor=white@0.15:x=(w-tw)/2:y=(h/2)${yOffset}:fontfile='${fontFile}':borderw=12:bordercolor=white@0.1:enable='${enableExpr}'`,
+        // Inner glow
+        `drawtext=text='${cleanText}':fontsize=${fontSize}:fontcolor=white@0.3:x=(w-tw)/2:y=(h/2)${yOffset}:fontfile='${fontFile}':borderw=6:bordercolor=white@0.2:enable='${enableExpr}'`,
+        // Main text
+        `drawtext=text='${cleanText}':fontsize=${fontSize}:fontcolor=${fontColor}:x=(w-tw)/2:y=(h/2)${yOffset}:fontfile='${fontFile}':borderw=2:bordercolor=white@0.4:enable='${enableExpr}'`
+    ].join(',');
+}
+
+// Cleanup function for old files
 function cleanupOldFiles() {
     [uploadsDir, outputDir].forEach(dir => {
         if (fs.existsSync(dir)) {
             fs.readdirSync(dir).forEach(file => {
                 const filePath = path.join(dir, file);
                 const stats = fs.statSync(filePath);
-                // Delete files older than 5 minutes
                 if (Date.now() - stats.mtimeMs > 5 * 60 * 1000) {
                     try {
                         fs.unlinkSync(filePath);
@@ -41,14 +95,7 @@ function cleanupOldFiles() {
 // Run cleanup every 5 minutes
 setInterval(cleanupOldFiles, 5 * 60 * 1000);
 
-// Create directories if they don't exist
-[uploadsDir, outputDir].forEach(dir => {
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-});
-
-// Configure multer with file size limits
+// Configure multer
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, uploadsDir);
@@ -62,12 +109,12 @@ const storage = multer.diskStorage({
 const upload = multer({
     storage: storage,
     limits: {
-        fileSize: 50 * 1024 * 1024, // 50MB limit
-        files: 2 // Max 2 files (video + audio)
+        fileSize: 25 * 1024 * 1024, // 25MB per file
+        files: 2
     }
 });
 
-// Health check endpoint
+// Routes
 app.get('/', (req, res) => {
     res.json({
         status: 'OK',
@@ -93,14 +140,20 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Main processing endpoint
 app.post('/combine', upload.fields([
     { name: 'video', maxCount: 1 },
     { name: 'audio', maxCount: 1 }
 ]), async (req, res) => {
     try {
-        const { text, textPosition = 'center', fontSize = '24', fontColor = 'white' } = req.body;
-        
+        const {
+            transcript1,
+            transcript2,
+            channelName = "@motivvmindset",
+            fontSize = "80",
+            fontColor = "white",
+            highlightColor = "#98FBCB"
+        } = req.body;
+
         if (!req.files || !req.files.video) {
             return res.status(400).json({ error: 'Video file is required' });
         }
@@ -110,42 +163,56 @@ app.post('/combine', upload.fields([
         const outputFileName = `output_${uuidv4()}.mp4`;
         const outputPath = path.join(outputDir, outputFileName);
 
-        console.log('Processing request:', {
-            video: videoFile.filename,
-            audio: audioFile ? audioFile.filename : 'none',
-            text: text || 'none',
-            memoryUsage: process.memoryUsage()
-        });
-
         // Create FFmpeg command
         let command = ffmpeg(videoFile.path);
 
-        // Memory-optimized settings
+        // Generate text filters
+        const textFilters = [];
+
+        // Add transcript1 if provided
+        if (transcript1) {
+            textFilters.push(
+                createTranscriptDrawText(transcript1, 'lt(t,7.5)', fontSize, fontColor, fontFile, '-500')
+            );
+        }
+
+        // Add transcript2 if provided
+        if (transcript2) {
+            textFilters.push(
+                createTranscriptDrawText(transcript2, 'gte(t,8.5)', fontSize, fontColor, fontFile, '-500')
+            );
+        }
+
+        // Add channel name
+        textFilters.push(
+            createChannelNameDrawText(channelName, fontColor, fontFile)
+        );
+
+        // Memory-optimized settings with 5MB target size
         const outputOptions = [
             '-c:v libx264',
-            '-preset ultrafast', // Faster encoding, less memory
-            '-crf 28', // Lower quality, less memory
+            '-preset ultrafast',
+            '-crf 32',
+            '-maxrate 1M',
+            '-bufsize 2M',
             '-movflags faststart',
-            '-threads 2' // Limit CPU threads
+            '-threads 2',
+            '-fs 5242880'
         ];
 
         // Add audio if provided
         if (audioFile) {
             command = command.addInput(audioFile.path)
                 .audioCodec('aac')
-                .audioBitrate('128k'); // Lower audio quality
+                .audioBitrate('64k');
         }
 
-        // Configure output
-        command = command.outputOptions(outputOptions);
+        // Configure output with filters
+        command = command
+            .outputOptions(outputOptions)
+            .videoFilters(textFilters.filter(Boolean).join(','));
 
-        // Add text overlay if provided
-        if (text) {
-            const textFilter = `drawtext=text='${text.replace(/'/g, "\\'")}':fontsize=${fontSize}:fontcolor=${fontColor}:x=(w-text_w)/2:y=(h-text_h)/2`;
-            command = command.videoFilters(textFilter);
-        }
-
-        // Process the video with progress monitoring
+        // Process the video
         command
             .output(outputPath)
             .on('start', (commandLine) => {
@@ -157,14 +224,10 @@ app.post('/combine', upload.fields([
             })
             .on('end', () => {
                 console.log('Processing finished successfully');
-                
-                // Send file back
                 res.download(outputPath, outputFileName, (err) => {
                     if (err) {
                         console.error('Download error:', err);
                     }
-                    
-                    // Cleanup files after sending
                     setTimeout(() => {
                         cleanupFiles([videoFile.path, audioFile?.path, outputPath]);
                     }, 1000);
@@ -176,8 +239,6 @@ app.post('/combine', upload.fields([
                     error: 'Processing failed',
                     details: err.message
                 });
-                
-                // Cleanup on error
                 cleanupFiles([videoFile.path, audioFile?.path, outputPath]);
             })
             .run();
@@ -205,19 +266,19 @@ function cleanupFiles(filePaths) {
     });
 }
 
-// Start server with memory monitoring
+// Start server
 app.listen(PORT, () => {
     console.log(`FFmpeg API server running on port ${PORT}`);
     console.log('Initial memory usage:', process.memoryUsage());
 });
 
-// Handle process errors
+// Error handling
 process.on('uncaughtException', (err) => {
     console.error('Uncaught Exception:', err);
-    cleanupOldFiles(); // Cleanup before exit
+    cleanupOldFiles();
 });
 
 process.on('unhandledRejection', (err) => {
     console.error('Unhandled Rejection:', err);
-    cleanupOldFiles(); // Cleanup before exit
+    cleanupOldFiles();
 });
