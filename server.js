@@ -13,6 +13,24 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Constants for text rendering
+const TEXT_CONFIG = {
+    maxLineWidth: 0.8, // 80% of video width
+    fontSize: 80,
+    channelFontSize: 40,
+    fontColor: "white",
+    highlightColor: "#98FBCB",
+    lineHeightMultiplier: 1.2,
+    textVerticalOffset: -500,
+    channelVerticalOffset: 400,
+    glowLevels: [
+        { opacity: 0.08, borderWidth: 20, borderOpacity: 0.05 },
+        { opacity: 0.15, borderWidth: 12, borderOpacity: 0.1 },
+        { opacity: 0.3, borderWidth: 6, borderOpacity: 0.2 },
+        { opacity: 1, borderWidth: 2, borderOpacity: 0.4 }
+    ]
+};
+
 // Create directories
 const uploadsDir = './uploads';
 const outputDir = './output';
@@ -27,60 +45,102 @@ const fontDir = './fonts';
 // Font file path
 const fontFile = path.join(fontDir, 'Frontage-Condensed-Bold.ttf');
 
-// Helper function to check file size
-function checkFileSize(file) {
-    const maxSize = 500 * 1024 * 1024; // 500MB
-    if (file.size > maxSize) {
-        throw new Error(`File ${file.originalname} is too large. Maximum size is 500MB`);
+// Text processing helper functions
+function cleanText(text) {
+    return text
+        .replace(/['"]/g, '')
+        .replace(/[:]/g, ' ')
+        .replace(/[,]/g, ' ')
+        .replace(/[\[\]]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function splitTextIntoLines(text, maxCharsPerLine) {
+    const words = text.split(' ');
+    const lines = [];
+    let currentLine = [];
+    let currentLength = 0;
+
+    words.forEach((word, index) => {
+        const wordLength = word.length;
+        if (currentLength + wordLength + (currentLine.length > 0 ? 1 : 0) <= maxCharsPerLine) {
+            currentLine.push({ word, index });
+            currentLength += wordLength + (currentLine.length > 0 ? 1 : 0);
+        } else {
+            if (currentLine.length > 0) {
+                lines.push(currentLine);
+            }
+            currentLine = [{ word, index }];
+            currentLength = wordLength;
+        }
+    });
+
+    if (currentLine.length > 0) {
+        lines.push(currentLine);
     }
-    return true;
+
+    return lines;
 }
 
-// Text processing functions
-function createChannelNameDrawText(channelName, fontColor, fontFile) {
-    const cleanChannelName = channelName
-        .replace(/['"]/g, '')
-        .replace(/[:]/g, ' ')
-        .replace(/[,]/g, ' ')
-        .replace(/[\[\]]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+function createGlowEffects(text, x, y, fontSize, color, fontFile, enableExpr = null) {
+    return TEXT_CONFIG.glowLevels.map(level => {
+        const baseCommand = [
+            `drawtext=text='${text}'`,
+            `fontfile='${fontFile}'`,
+            `fontsize=${fontSize}`,
+            `fontcolor=${color}@${level.opacity}`,
+            `x=${x}`,
+            `y=${y}`,
+            `borderw=${level.borderWidth}`,
+            `bordercolor=white@${level.borderOpacity}`
+        ];
 
-    return [
-        // Outer glow
-        `drawtext=text='${cleanChannelName}':fontsize=40:fontcolor=white@0.08:x=(w-tw)/2:y=(h/2)+400:fontfile='${fontFile}':borderw=10:bordercolor=white@0.05`,
-        // Medium glow
-        `drawtext=text='${cleanChannelName}':fontsize=40:fontcolor=white@0.15:x=(w-tw)/2:y=(h/2)+400:fontfile='${fontFile}':borderw=6:bordercolor=white@0.1`,
-        // Inner glow
-        `drawtext=text='${cleanChannelName}':fontsize=40:fontcolor=white@0.3:x=(w-tw)/2:y=(h/2)+400:fontfile='${fontFile}':borderw=3:bordercolor=white@0.2`,
-        // Main text
-        `drawtext=text='${cleanChannelName}':fontsize=40:fontcolor=${fontColor}:x=(w-tw)/2:y=(h/2)+400:fontfile='${fontFile}':borderw=1:bordercolor=white@0.4`
-    ].join(',');
+        if (enableExpr) {
+            baseCommand.push(`enable='${enableExpr}'`);
+        }
+
+        return baseCommand.join(':');
+    }).join(',');
 }
 
-function createTranscriptDrawText(text, enableExpr, fontSize, fontColor, fontFile, yOffset) {
-    if (!text) return '';
+function createHighlightedText(lines, isFirstTranscript, fontSize, fontFile, yOffset, enableExpr) {
+    const drawCommands = [];
+    const totalHeight = lines.length * fontSize * TEXT_CONFIG.lineHeightMultiplier;
+    
+    lines.forEach((line, lineIndex) => {
+        const y = `(h/2)${yOffset}+${lineIndex * fontSize * TEXT_CONFIG.lineHeightMultiplier}`;
+        
+        // Determine which words to highlight
+        const words = line.map((wordObj, wordIndex) => {
+            const isHighlighted = isFirstTranscript ? 
+                (lineIndex === lines.length - 1 && wordIndex >= line.length - 2) : // Last two words of last line
+                (lineIndex === 0 && wordIndex === 0); // First word of first line
+            
+            return {
+                ...wordObj,
+                highlight: isHighlighted
+            };
+        });
 
-    const cleanText = text
-        .replace(/['"]/g, '')
-        .replace(/[:]/g, ' ')
-        .replace(/[,]/g, ' ')
-        .replace(/[\[\]]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+        // Calculate positions for each word
+        let currentX = '(w-tw)/2'; // Center the line
+        words.forEach((wordObj) => {
+            const color = wordObj.highlight ? TEXT_CONFIG.highlightColor : TEXT_CONFIG.fontColor;
+            drawCommands.push(createGlowEffects(
+                wordObj.word,
+                currentX,
+                y,
+                fontSize,
+                color,
+                fontFile,
+                enableExpr
+            ));
+        });
+    });
 
-    return [
-        // Outer glow
-        `drawtext=text='${cleanText}':fontsize=${fontSize}:fontcolor=white@0.08:x=(w-tw)/2:y=(h/2)${yOffset}:fontfile='${fontFile}':borderw=20:bordercolor=white@0.05:enable='${enableExpr}'`,
-        // Medium glow
-        `drawtext=text='${cleanText}':fontsize=${fontSize}:fontcolor=white@0.15:x=(w-tw)/2:y=(h/2)${yOffset}:fontfile='${fontFile}':borderw=12:bordercolor=white@0.1:enable='${enableExpr}'`,
-        // Inner glow
-        `drawtext=text='${cleanText}':fontsize=${fontSize}:fontcolor=white@0.3:x=(w-tw)/2:y=(h/2)${yOffset}:fontfile='${fontFile}':borderw=6:bordercolor=white@0.2:enable='${enableExpr}'`,
-        // Main text
-        `drawtext=text='${cleanText}':fontsize=${fontSize}:fontcolor=${fontColor}:x=(w-tw)/2:y=(h/2)${yOffset}:fontfile='${fontFile}':borderw=2:bordercolor=white@0.4:enable='${enableExpr}'`
-    ].join(',');
+    return drawCommands.join(',');
 }
-
 // Cleanup functions
 function cleanupOldFiles() {
     [uploadsDir, outputDir].forEach(dir => {
@@ -135,7 +195,6 @@ const upload = multer({
         files: 2
     },
     fileFilter: (req, file, cb) => {
-        // Check file type
         if (file.fieldname === 'video') {
             if (!file.mimetype.startsWith('video/')) {
                 return cb(new Error('Only video files are allowed for video field'));
@@ -211,69 +270,93 @@ app.post('/combine', async (req, res) => {
             transcript1,
             transcript2,
             channelName = "@motivvmindset",
-            fontSize = "80",
-            fontColor = "white",
-            highlightColor = "#98FBCB"
+            fontSize = TEXT_CONFIG.fontSize.toString(),
+            fontColor = TEXT_CONFIG.fontColor,
+            highlightColor = TEXT_CONFIG.highlightColor
         } = req.body;
 
         if (!req.files || !req.files.video) {
             return res.status(400).json({ error: 'Video file is required' });
         }
 
-        // Check file sizes
         const videoFile = req.files.video[0];
         const audioFile = req.files.audio ? req.files.audio[0] : null;
-        
-        checkFileSize(videoFile);
-        if (audioFile) {
-            checkFileSize(audioFile);
-        }
-
         const outputFileName = `output_${uuidv4()}.mp4`;
         const outputPath = path.join(outputDir, outputFileName);
 
-        // Create FFmpeg command
-        let command = ffmpeg(videoFile.path);
+        // Get video dimensions first
+        const videoInfo = await new Promise((resolve, reject) => {
+            ffmpeg.ffprobe(videoFile.path, (err, metadata) => {
+                if (err) reject(err);
+                else resolve(metadata);
+            });
+        });
+
+        const videoWidth = videoInfo.streams[0].width;
+        const maxCharsPerLine = Math.floor((videoWidth * TEXT_CONFIG.maxLineWidth) / (parseInt(fontSize) * 0.6));
 
         // Generate text filters
         const textFilters = [];
 
-        // Add transcript1 if provided
+        // Process transcript1
         if (transcript1) {
-            textFilters.push(
-                createTranscriptDrawText(transcript1, 'lt(t,7.5)', fontSize, fontColor, fontFile, '-500')
-            );
+            const cleanedText1 = cleanText(transcript1);
+            const lines1 = splitTextIntoLines(cleanedText1, maxCharsPerLine);
+            textFilters.push(createHighlightedText(
+                lines1,
+                true,
+                parseInt(fontSize),
+                fontFile,
+                TEXT_CONFIG.textVerticalOffset,
+                'lt(t,7.5)'
+            ));
         }
 
-        // Add transcript2 if provided
+        // Process transcript2
         if (transcript2) {
-            textFilters.push(
-                createTranscriptDrawText(transcript2, 'gte(t,8.5)', fontSize, fontColor, fontFile, '-500')
-            );
+            const cleanedText2 = cleanText(transcript2);
+            const lines2 = splitTextIntoLines(cleanedText2, maxCharsPerLine);
+            textFilters.push(createHighlightedText(
+                lines2,
+                false,
+                parseInt(fontSize),
+                fontFile,
+                TEXT_CONFIG.textVerticalOffset,
+                'gte(t,8.5)'
+            ));
         }
 
         // Add channel name
-        textFilters.push(
-            createChannelNameDrawText(channelName, fontColor, fontFile)
-        );
+        const cleanedChannelName = cleanText(channelName);
+        textFilters.push(createGlowEffects(
+            cleanedChannelName,
+            '(w-tw)/2',
+            `(h/2)+${TEXT_CONFIG.channelVerticalOffset}`,
+            TEXT_CONFIG.channelFontSize,
+            fontColor,
+            fontFile
+        ));
 
         // Memory-optimized settings with larger output size
-const outputOptions = [
-    '-c:v libx264',
-    '-preset ultrafast',
-    '-crf 28', // Better quality (lower number = higher quality)
-    '-maxrate 5M', // Increased maxrate
-    '-bufsize 10M', // Increased buffer size
-    '-movflags faststart',
-    '-threads 2',
-    '-fs 524288000' // 500MB output limit (500 * 1024 * 1024)
-];
+        const outputOptions = [
+            '-c:v libx264',
+            '-preset ultrafast',
+            '-crf 28',
+            '-maxrate 5M',
+            '-bufsize 10M',
+            '-movflags faststart',
+            '-threads 2',
+            '-fs 524288000' // 500MB output limit
+        ];
+
+        // Create FFmpeg command
+        let command = ffmpeg(videoFile.path);
 
         // Add audio if provided
         if (audioFile) {
             command = command.addInput(audioFile.path)
                 .audioCodec('aac')
-                .audioBitrate('64k');
+                .audioBitrate('192k');
         }
 
         // Configure output with filters
@@ -319,7 +402,7 @@ const outputOptions = [
                 error: 'File upload error',
                 details: error.message,
                 limits: {
-                    maxFileSize: '40MB per file',
+                    maxFileSize: '500MB per file',
                     allowedTypes: {
                         video: ['video/mp4', 'video/quicktime'],
                         audio: ['audio/mpeg', 'audio/mp3']
