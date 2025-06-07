@@ -29,9 +29,9 @@ const fontFile = path.join(fontDir, 'Frontage-Condensed-Bold.ttf');
 
 // Helper function to check file size
 function checkFileSize(file) {
-    const maxSize = 40 * 1024 * 1024; // 40MB
+    const maxSize = 500 * 1024 * 1024; // 500MB
     if (file.size > maxSize) {
-        throw new Error(`File ${file.originalname} is too large. Maximum size is 40MB`);
+        throw new Error(`File ${file.originalname} is too large. Maximum size is 500MB`);
     }
     return true;
 }
@@ -156,11 +156,11 @@ app.use((error, req, res, next) => {
         if (error.code === 'LIMIT_FILE_SIZE') {
             return res.status(400).json({
                 error: 'File too large',
-                details: 'Maximum file size is 40MB',
+                details: 'Maximum file size is 500MB',
                 limits: {
-                    video: '40MB maximum',
-                    audio: '40MB maximum',
-                    total: '80MB maximum combined'
+                    video: '500MB maximum',
+                    audio: '500MB maximum',
+                    total: '1GB maximum combined'
                 }
             });
         }
