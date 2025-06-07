@@ -257,17 +257,17 @@ app.post('/combine', async (req, res) => {
             createChannelNameDrawText(channelName, fontColor, fontFile)
         );
 
-        // Memory-optimized settings with 5MB target size
-        const outputOptions = [
-            '-c:v libx264',
-            '-preset ultrafast',
-            '-crf 32',
-            '-maxrate 1M',
-            '-bufsize 2M',
-            '-movflags faststart',
-            '-threads 2',
-            '-fs 5242880'
-        ];
+        // Memory-optimized settings with larger output size
+const outputOptions = [
+    '-c:v libx264',
+    '-preset ultrafast',
+    '-crf 28', // Better quality (lower number = higher quality)
+    '-maxrate 5M', // Increased maxrate
+    '-bufsize 10M', // Increased buffer size
+    '-movflags faststart',
+    '-threads 2',
+    '-fs 524288000' // 500MB output limit (500 * 1024 * 1024)
+];
 
         // Add audio if provided
         if (audioFile) {
