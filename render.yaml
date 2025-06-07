@@ -8,6 +8,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=400"
     disk:
       name: ffmpeg-data
       mountPath: /opt/render/project/src/data
