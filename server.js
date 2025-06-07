@@ -9,23 +9,49 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Memory optimization
+const LOW_MEMORY_MODE = true; // Enable memory optimizations
+
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Create uploads directory
+// Create directories with cleanup
 const uploadsDir = './uploads';
 const outputDir = './output';
 
-if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
+// Cleanup function for old files (runs every 5 minutes)
+function cleanupOldFiles() {
+    [uploadsDir, outputDir].forEach(dir => {
+        if (fs.existsSync(dir)) {
+            fs.readdirSync(dir).forEach(file => {
+                const filePath = path.join(dir, file);
+                const stats = fs.statSync(filePath);
+                // Delete files older than 5 minutes
+                if (Date.now() - stats.mtimeMs > 5 * 60 * 1000) {
+                    try {
+                        fs.unlinkSync(filePath);
+                        console.log('Cleaned up:', filePath);
+                    } catch (err) {
+                        console.error('Cleanup error:', err);
+                    }
+                }
+            });
+        }
+    });
 }
 
-if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
-}
+// Run cleanup every 5 minutes
+setInterval(cleanupOldFiles, 5 * 60 * 1000);
 
-// Configure multer for file uploads
+// Create directories if they don't exist
+[uploadsDir, outputDir].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+});
+
+// Configure multer with file size limits
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, uploadsDir);
@@ -36,16 +62,19 @@ const storage = multer.diskStorage({
     }
 });
 
-const upload = multer({ 
+const upload = multer({
     storage: storage,
     limits: {
-        fileSize: 100 * 1024 * 1024 // 100MB limit
+        fileSize: 100 * 1024 * 1024, // 100MB limit
+        files: 2 // Max 2 files (video + audio)
     }
 });
 
 // Health check endpoint
 app.get('/', (req, res) => {
-    res.json({ 
+    res.json({
+        status: 'OK',
+        memory: process.memoryUsage(),
         message: 'FFmpeg API is running!',
         endpoints: {
             '/combine': 'POST - Combine video, audio, and text',
@@ -55,7 +84,16 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'OK', timestamp: new Date().toISOString() });
+    const memoryUsage = process.memoryUsage();
+    res.json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        memory: {
+            heapUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024) + 'MB',
+            heapTotal: Math.round(memoryUsage.heapTotal / 1024 / 1024) + 'MB',
+            rss: Math.round(memoryUsage.rss / 1024 / 1024) + 'MB'
+        }
+    });
 });
 
 // Main processing endpoint
@@ -78,25 +116,42 @@ app.post('/combine', upload.fields([
         console.log('Processing request:', {
             video: videoFile.filename,
             audio: audioFile ? audioFile.filename : 'none',
-            text: text || 'none'
+            text: text || 'none',
+            memoryUsage: process.memoryUsage()
         });
 
-        // Create FFmpeg command
+        // Create FFmpeg command with memory optimizations
         let command = ffmpeg(videoFile.path);
+
+        // Memory-optimized settings
+        const outputOptions = [
+            '-c:v libx264',
+            '-preset ultrafast', // Faster encoding, less memory
+            '-crf 28', // Lower quality, less memory
+            '-movflags faststart',
+            '-memory_limit 400MB', // Limit FFmpeg memory usage
+        ];
+
+        if (LOW_MEMORY_MODE) {
+            outputOptions.push(
+                '-threads 2', // Limit CPU threads
+                '-tile-columns 6',
+                '-frame-parallel 0',
+                '-auto-alt-ref 0'
+            );
+        }
 
         // Add audio if provided
         if (audioFile) {
             command = command.addInput(audioFile.path);
+            if (LOW_MEMORY_MODE) {
+                command = command.audioCodec('aac')
+                    .audioBitrate('128k'); // Lower audio quality
+            }
         }
 
-        // Configure output
-        command = command
-            .outputOptions([
-                '-c:v libx264',
-                '-c:a aac',
-                '-preset fast',
-                '-crf 23'
-            ]);
+        // Configure output with memory optimizations
+        command = command.outputOptions(outputOptions);
 
         // Add text overlay if provided
         if (text) {
@@ -104,14 +159,15 @@ app.post('/combine', upload.fields([
             command = command.videoFilters(textFilter);
         }
 
-        // Process the video
+        // Process the video with progress monitoring
         command
             .output(outputPath)
             .on('start', (commandLine) => {
                 console.log('FFmpeg started:', commandLine);
             })
             .on('progress', (progress) => {
-                console.log('Processing: ' + Math.round(progress.percent) + '% done');
+                console.log('Processing:', Math.round(progress.percent) + '% done');
+                console.log('Memory usage:', process.memoryUsage());
             })
             .on('end', () => {
                 console.log('Processing finished successfully');
@@ -125,14 +181,14 @@ app.post('/combine', upload.fields([
                     // Cleanup files after sending
                     setTimeout(() => {
                         cleanupFiles([videoFile.path, audioFile?.path, outputPath]);
-                    }, 5000);
+                    }, 1000);
                 });
             })
             .on('error', (err) => {
                 console.error('FFmpeg error:', err);
-                res.status(500).json({ 
-                    error: 'Processing failed', 
-                    details: err.message 
+                res.status(500).json({
+                    error: 'Processing failed',
+                    details: err.message
                 });
                 
                 // Cleanup on error
@@ -142,9 +198,9 @@ app.post('/combine', upload.fields([
 
     } catch (error) {
         console.error('Server error:', error);
-        res.status(500).json({ 
-            error: 'Internal server error', 
-            details: error.message 
+        res.status(500).json({
+            error: 'Internal server error',
+            details: error.message
         });
     }
 });
@@ -163,7 +219,20 @@ function cleanupFiles(filePaths) {
     });
 }
 
-// Start server
+// Start server with memory monitoring
 app.listen(PORT, () => {
     console.log(`FFmpeg API server running on port ${PORT}`);
+    console.log('Initial memory usage:', process.memoryUsage());
 });
+
+// Handle process errors
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+    cleanupOldFiles(); // Cleanup before exit
+});
+
+process.on('unhandledRejection', (err) => {
+    console.error('Unhandled Rejection:', err);
+    cleanupOldFiles(); // Cleanup before exit
+});
+
