@@ -1,7 +1,7 @@
 {
   "name": "ffmpeg-api",
   "version": "1.0.0",
-  "description": "Cloud-based FFmpeg API for video processing",
+  "description": "Cloud-based FFmpeg API for video processing with text effects",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
