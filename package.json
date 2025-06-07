@@ -15,6 +15,18 @@
     "uuid": "^9.0.0"
   },
   "engines": {
-    "node": "18.x"
-  }
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "your-repository-url"
+  },
+  "keywords": [
+    "ffmpeg",
+    "video",
+    "api",
+    "text-effects"
+  ],
+  "author": "",
+  "license": "ISC"
 }
