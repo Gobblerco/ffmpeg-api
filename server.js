@@ -49,6 +49,8 @@ function createChannelNameDrawText(channelName, fontColor, fontFile) {
     ].join(',');
 }
 
+// Add this after the previous code
+
 function createTranscriptDrawText(text, enableExpr, fontSize, fontColor, fontFile, yOffset) {
     if (!text) return '';
 
@@ -72,7 +74,7 @@ function createTranscriptDrawText(text, enableExpr, fontSize, fontColor, fontFil
     ].join(',');
 }
 
-// Cleanup function for old files
+// Cleanup functions
 function cleanupOldFiles() {
     [uploadsDir, outputDir].forEach(dir => {
         if (fs.existsSync(dir)) {
@@ -88,6 +90,19 @@ function cleanupOldFiles() {
                     }
                 }
             });
+        }
+    });
+}
+
+function cleanupFiles(filePaths) {
+    filePaths.forEach(filePath => {
+        if (filePath && fs.existsSync(filePath)) {
+            try {
+                fs.unlinkSync(filePath);
+                console.log('Cleaned up:', filePath);
+            } catch (err) {
+                console.error('Cleanup error:', err);
+            }
         }
     });
 }
@@ -113,6 +128,8 @@ const upload = multer({
         files: 2
     }
 });
+
+// Add this after the previous code
 
 // Routes
 app.get('/', (req, res) => {
@@ -187,6 +204,7 @@ app.post('/combine', upload.fields([
         textFilters.push(
             createChannelNameDrawText(channelName, fontColor, fontFile)
         );
+// Continue inside the /combine endpoint after the previous code
 
         // Memory-optimized settings with 5MB target size
         const outputOptions = [
@@ -251,20 +269,6 @@ app.post('/combine', upload.fields([
         });
     }
 });
-
-// Cleanup function
-function cleanupFiles(filePaths) {
-    filePaths.forEach(filePath => {
-        if (filePath && fs.existsSync(filePath)) {
-            try {
-                fs.unlinkSync(filePath);
-                console.log('Cleaned up:', filePath);
-            } catch (err) {
-                console.error('Cleanup error:', err);
-            }
-        }
-    });
-}
 
 // Start server
 app.listen(PORT, () => {
