@@ -266,46 +266,46 @@ app.post('/process-video', upload.fields([
     const drawText = drawTextFilters.length > 0 ? drawTextFilters.join(',') : '';
 
     // Process video with FFmpeg
-    await new Promise((resolve, reject) => {
-      let command = ffmpeg(videoPath)
-        .input(audioPath)
-        .outputOptions([
-          '-c:v libx264',
-          '-preset fast',
-          '-crf 23',
-          '-c:a aac',
-          '-b:a 128k',
-          '-movflags +faststart',
-          '-threads 2'
-        ]);
+await new Promise((resolve, reject) => {
+  let command = ffmpeg(videoPath)
+    .input(audioPath)
+    .outputOptions([
+      '-c:v libx264',
+      '-preset fast',
+      '-crf 23',
+      '-c:a aac',
+      '-b:a 128k',
+      '-movflags +faststart',
+      '-threads 2',
+      '-t 16' // Set duration to exactly 16 seconds
+    ]);
 
-      if (drawText) {
-        command = command.complexFilter([
-          `[0:v]${drawText}[v]`
-        ]).outputOptions(['-map [v]', '-map 1:a']);
-      } else {
-        command = command.outputOptions(['-map 0:v', '-map 1:a']);
-      }
+  if (drawText) {
+    command = command.complexFilter([
+      `[0:v]${drawText}[v]`
+    ]).outputOptions(['-map [v]', '-map 1:a']);
+  } else {
+    command = command.outputOptions(['-map 0:v', '-map 1:a']);
+  }
 
-      command
-        .output(outputPath)
-        .on('start', (commandLine) => {
-          console.log('FFmpeg process started:', commandLine);
-        })
-        .on('progress', (progress) => {
-          console.log('Processing: ' + progress.percent + '% done');
-        })
-        .on('end', () => {
-          console.log('Processing finished successfully');
-          resolve();
-        })
-        .on('error', (err) => {
-          console.error('FFmpeg error:', err);
-          reject(err);
-        })
-        .run();
-    });
-
+  command
+    .output(outputPath)
+    .on('start', (commandLine) => {
+      console.log('FFmpeg process started:', commandLine);
+    })
+    .on('progress', (progress) => {
+      console.log('Processing: ' + progress.percent + '% done');
+    })
+    .on('end', () => {
+      console.log('Processing finished successfully');
+      resolve();
+    })
+    .on('error', (err) => {
+      console.error('FFmpeg error:', err);
+      reject(err);
+    })
+    .run();
+});
     // Send the processed video
     res.download(outputPath, 'processed-video.mp4', async (err) => {
       if (err) {
