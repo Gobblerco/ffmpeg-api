@@ -15,15 +15,18 @@ app.use(express.json());
 
 // Constants for text rendering
 const TEXT_CONFIG = {
-    maxLineWidth: 0.8, // 80% of video width
+    maxLineWidth: 0.8,
     fontSize: 80,
     channelFontSize: 40,
     fontColor: "white",
     highlightColor: "#98FBCB",
-    lineHeightMultiplier: 2.5, // Increased for more spacing
-    textVerticalOffset: -300, // Adjusted for better positioning
+    lineHeightMultiplier: 3.5, // Increased for better spacing
+    textVerticalOffset: {
+        first: -400,  // Position for first transcript
+        second: 100,  // Position for second transcript
+        spacing: 200  // Extra spacing between transcripts
+    },
     channelVerticalOffset: 400,
-    lineSpacing: 100, // Explicit line spacing
     glowLevels: [
         { opacity: 0.08, borderWidth: 20, borderOpacity: 0.05 },
         { opacity: 0.15, borderWidth: 12, borderOpacity: 0.1 },
@@ -112,17 +115,20 @@ function createGlowEffects(text, x, y, fontSize, color, fontFile, enableExpr = n
 function createHighlightedText(lines, isFirstTranscript, fontSize, fontFile, yOffset, enableExpr) {
     const drawCommands = [];
     const lineHeight = fontSize * TEXT_CONFIG.lineHeightMultiplier;
-    const totalHeight = lines.length * lineHeight;
-    const startY = `(h/2)${yOffset}-(${totalHeight}/2)`; // Center vertically
-
+    
     lines.forEach((line, lineIndex) => {
-        const lineY = `${startY}+${lineIndex * lineHeight}`;
+        // Calculate vertical position for each line
+        const baseY = isFirstTranscript ? 
+            TEXT_CONFIG.textVerticalOffset.first : 
+            TEXT_CONFIG.textVerticalOffset.second;
         
-        // Process each word in the line
+        const lineY = `(h/2)${baseY}+${lineIndex * lineHeight}`;
+        
+        // Process words in the line
         const words = line.map((wordObj, wordIndex) => {
             const isHighlighted = isFirstTranscript ? 
-                (lineIndex === lines.length - 1 && wordIndex >= line.length - 2) : // Last two words
-                (lineIndex === 0 && wordIndex === 0); // First word
+                (lineIndex === lines.length - 1 && wordIndex >= line.length - 2) : 
+                (lineIndex === 0 && wordIndex === 0);
             
             return {
                 ...wordObj,
@@ -130,13 +136,12 @@ function createHighlightedText(lines, isFirstTranscript, fontSize, fontFile, yOf
             };
         });
 
-        // Create separate commands for regular and highlighted words
-        let currentX = '(w-tw)/2';
-        words.forEach((wordObj, wordIndex) => {
+        // Create text command for each word
+        words.forEach((wordObj) => {
             const color = wordObj.highlight ? TEXT_CONFIG.highlightColor : TEXT_CONFIG.fontColor;
             drawCommands.push(createGlowEffects(
                 wordObj.word,
-                currentX,
+                '(w-tw)/2',
                 lineY,
                 fontSize,
                 color,
@@ -259,7 +264,6 @@ app.get('/health', (req, res) => {
         }
     });
 });
-
 app.post('/combine', async (req, res) => {
     try {
         // Wrap multer in a promise
@@ -288,6 +292,31 @@ app.post('/combine', async (req, res) => {
 
         const videoFile = req.files.video[0];
         const audioFile = req.files.audio ? req.files.audio[0] : null;
+
+        // Validate audio file if provided
+        if (audioFile) {
+            try {
+                await new Promise((resolve, reject) => {
+                    ffmpeg.ffprobe(audioFile.path, (err, metadata) => {
+                        if (err) reject(err);
+                        else {
+                            const hasAudioStream = metadata.streams.some(s => s.codec_type === 'audio');
+                            if (!hasAudioStream) {
+                                reject(new Error('Invalid audio file: No audio stream found'));
+                            } else {
+                                resolve();
+                            }
+                        }
+                    });
+                });
+            } catch (error) {
+                return res.status(400).json({
+                    error: 'Invalid audio file',
+                    details: error.message
+                });
+            }
+        }
+
         const outputFileName = `output_${uuidv4()}.mp4`;
         const outputPath = path.join(outputDir, outputFileName);
 
@@ -304,7 +333,6 @@ app.post('/combine', async (req, res) => {
 
         // Generate text filters
         const textFilters = [];
-        let currentVerticalOffset = TEXT_CONFIG.textVerticalOffset;
 
         // Process transcript1
         if (transcript1) {
@@ -315,13 +343,10 @@ app.post('/combine', async (req, res) => {
                 true,
                 parseInt(fontSize),
                 fontFile,
-                currentVerticalOffset,
+                TEXT_CONFIG.textVerticalOffset.first,
                 TEXT_CONFIG.transcriptTiming.first
             ));
         }
-
-        // Add spacing between transcripts
-        currentVerticalOffset += TEXT_CONFIG.lineSpacing;
 
         // Process transcript2
         if (transcript2) {
@@ -332,7 +357,7 @@ app.post('/combine', async (req, res) => {
                 false,
                 parseInt(fontSize),
                 fontFile,
-                currentVerticalOffset,
+                TEXT_CONFIG.textVerticalOffset.second,
                 TEXT_CONFIG.transcriptTiming.second
             ));
         }
@@ -348,7 +373,7 @@ app.post('/combine', async (req, res) => {
             fontFile
         ));
 
-        // Memory-optimized settings with larger output size
+        // Memory-optimized settings with audio fixes
         const outputOptions = [
             '-c:v libx264',
             '-preset ultrafast',
@@ -357,7 +382,8 @@ app.post('/combine', async (req, res) => {
             '-bufsize 10M',
             '-movflags faststart',
             '-threads 2',
-            '-fs 524288000' // 500MB output limit
+            '-fs 524288000', // 500MB output limit
+            '-shortest' // Ensure audio and video sync
         ];
 
         // Create FFmpeg command
@@ -365,9 +391,24 @@ app.post('/combine', async (req, res) => {
 
         // Add audio if provided
         if (audioFile) {
-            command = command.addInput(audioFile.path)
+            command = command
+                .addInput(audioFile.path)
                 .audioCodec('aac')
-                .audioBitrate('192k');
+                .audioBitrate('192k')
+                .outputOptions([
+                    '-map 0:v', // Map video from first input
+                    '-map 1:a', // Map audio from second input
+                    '-c:a aac',  // Use AAC codec for audio
+                    '-strict experimental' // Allow experimental codecs
+                ]);
+        } else {
+            // If no new audio, preserve original video audio
+            command = command
+                .outputOptions([
+                    '-map 0:v', // Map video
+                    '-map 0:a?', // Map audio if it exists
+                    '-c:a copy' // Copy original audio
+                ]);
         }
 
         // Configure output with filters
@@ -384,16 +425,28 @@ app.post('/combine', async (req, res) => {
             .on('progress', (progress) => {
                 console.log('Processing:', Math.round(progress.percent) + '% done');
                 console.log('Memory usage:', process.memoryUsage());
+                if (progress.timemark) {
+                    console.log('Timemark:', progress.timemark);
+                }
             })
             .on('end', () => {
                 console.log('Processing finished successfully');
-                res.download(outputPath, outputFileName, (err) => {
+                // Verify output file
+                ffmpeg.ffprobe(outputPath, (err, metadata) => {
                     if (err) {
-                        console.error('Download error:', err);
+                        console.error('Error verifying output:', err);
+                    } else {
+                        console.log('Output file streams:', metadata.streams.map(s => s.codec_type));
                     }
-                    setTimeout(() => {
-                        cleanupFiles([videoFile.path, audioFile?.path, outputPath]);
-                    }, 1000);
+                    // Continue with download
+                    res.download(outputPath, outputFileName, (err) => {
+                        if (err) {
+                            console.error('Download error:', err);
+                        }
+                        setTimeout(() => {
+                            cleanupFiles([videoFile.path, audioFile?.path, outputPath]);
+                        }, 1000);
+                    });
                 });
             })
             .on('error', (err) => {
