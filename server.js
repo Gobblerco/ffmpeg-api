@@ -27,6 +27,15 @@ const fontDir = './fonts';
 // Font file path
 const fontFile = path.join(fontDir, 'Frontage-Condensed-Bold.ttf');
 
+// Helper function to check file size
+function checkFileSize(file) {
+    const maxSize = 40 * 1024 * 1024; // 40MB
+    if (file.size > maxSize) {
+        throw new Error(`File ${file.originalname} is too large. Maximum size is 40MB`);
+    }
+    return true;
+}
+
 // Text processing functions
 function createChannelNameDrawText(channelName, fontColor, fontFile) {
     const cleanChannelName = channelName
@@ -48,8 +57,6 @@ function createChannelNameDrawText(channelName, fontColor, fontFile) {
         `drawtext=text='${cleanChannelName}':fontsize=40:fontcolor=${fontColor}:x=(w-tw)/2:y=(h/2)+400:fontfile='${fontFile}':borderw=1:bordercolor=white@0.4`
     ].join(',');
 }
-
-// Add this after the previous code
 
 function createTranscriptDrawText(text, enableExpr, fontSize, fontColor, fontFile, yOffset) {
     if (!text) return '';
@@ -124,12 +131,42 @@ const storage = multer.diskStorage({
 const upload = multer({
     storage: storage,
     limits: {
-        fileSize: 25 * 1024 * 1024, // 25MB per file
+        fileSize: 40 * 1024 * 1024, // 40MB limit
         files: 2
+    },
+    fileFilter: (req, file, cb) => {
+        // Check file type
+        if (file.fieldname === 'video') {
+            if (!file.mimetype.startsWith('video/')) {
+                return cb(new Error('Only video files are allowed for video field'));
+            }
+        }
+        if (file.fieldname === 'audio') {
+            if (!file.mimetype.startsWith('audio/')) {
+                return cb(new Error('Only audio files are allowed for audio field'));
+            }
+        }
+        cb(null, true);
     }
 });
 
-// Add this after the previous code
+// Error handling middleware
+app.use((error, req, res, next) => {
+    if (error instanceof multer.MulterError) {
+        if (error.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({
+                error: 'File too large',
+                details: 'Maximum file size is 40MB',
+                limits: {
+                    video: '40MB maximum',
+                    audio: '40MB maximum',
+                    total: '80MB maximum combined'
+                }
+            });
+        }
+    }
+    next(error);
+});
 
 // Routes
 app.get('/', (req, res) => {
@@ -157,11 +194,19 @@ app.get('/health', (req, res) => {
     });
 });
 
-app.post('/combine', upload.fields([
-    { name: 'video', maxCount: 1 },
-    { name: 'audio', maxCount: 1 }
-]), async (req, res) => {
+app.post('/combine', async (req, res) => {
     try {
+        // Wrap multer in a promise
+        await new Promise((resolve, reject) => {
+            upload.fields([
+                { name: 'video', maxCount: 1 },
+                { name: 'audio', maxCount: 1 }
+            ])(req, res, (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+
         const {
             transcript1,
             transcript2,
@@ -175,8 +220,15 @@ app.post('/combine', upload.fields([
             return res.status(400).json({ error: 'Video file is required' });
         }
 
+        // Check file sizes
         const videoFile = req.files.video[0];
         const audioFile = req.files.audio ? req.files.audio[0] : null;
+        
+        checkFileSize(videoFile);
+        if (audioFile) {
+            checkFileSize(audioFile);
+        }
+
         const outputFileName = `output_${uuidv4()}.mp4`;
         const outputPath = path.join(outputDir, outputFileName);
 
@@ -204,7 +256,6 @@ app.post('/combine', upload.fields([
         textFilters.push(
             createChannelNameDrawText(channelName, fontColor, fontFile)
         );
-// Continue inside the /combine endpoint after the previous code
 
         // Memory-optimized settings with 5MB target size
         const outputOptions = [
@@ -262,9 +313,23 @@ app.post('/combine', upload.fields([
             .run();
 
     } catch (error) {
-        console.error('Server error:', error);
-        res.status(500).json({
-            error: 'Internal server error',
+        console.error('Upload error:', error);
+        if (error instanceof multer.MulterError) {
+            return res.status(400).json({
+                error: 'File upload error',
+                details: error.message,
+                limits: {
+                    maxFileSize: '40MB per file',
+                    allowedTypes: {
+                        video: ['video/mp4', 'video/quicktime'],
+                        audio: ['audio/mpeg', 'audio/mp3']
+                    }
+                }
+            });
+        }
+        
+        return res.status(500).json({
+            error: 'Server error',
             details: error.message
         });
     }
