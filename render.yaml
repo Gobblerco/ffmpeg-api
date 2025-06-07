@@ -2,9 +2,12 @@ services:
   - type: web
     name: ffmpeg-api
     env: node
-    plan: free
     buildCommand: npm install
     startCommand: npm start
     envVars:
-      - key: NODE_VERSION
-        value: 18.17.0
+      - key: NODE_ENV
+        value: production
+    disk:
+      name: ffmpeg-storage
+      mountPath: /opt/render/project/src/storage
+      sizeGB: 10
