@@ -20,11 +20,11 @@ const TEXT_CONFIG = {
     channelFontSize: 40,
     fontColor: "white",
     highlightColor: "#98FBCB",
-    lineHeightMultiplier: 3.5, // Increased for better spacing
+    lineHeightMultiplier: 3.5,
     textVerticalOffset: {
-        first: -400,  // Position for first transcript
-        second: 100,  // Position for second transcript
-        spacing: 200  // Extra spacing between transcripts
+        first: -400,
+        second: 100,
+        spacing: 200
     },
     channelVerticalOffset: 400,
     glowLevels: [
@@ -92,24 +92,30 @@ function splitTextIntoLines(text, maxCharsPerLine) {
 }
 
 function createGlowEffects(text, x, y, fontSize, color, fontFile, enableExpr = null) {
-    return TEXT_CONFIG.glowLevels.map(level => {
-        const baseCommand = [
-            `drawtext=text='${text}'`,
-            `fontfile='${fontFile}'`,
-            `fontsize=${fontSize}`,
-            `fontcolor=${color}@${level.opacity}`,
-            `x=${x}`,
-            `y=${y}`,
-            `borderw=${level.borderWidth}`,
-            `bordercolor=white@${level.borderOpacity}`
-        ];
+    const escapedText = text.replace(/[\\':]/g, '\\$&'); // Escape special characters
+    const baseCommand = [
+        `drawtext=text='${escapedText}'`,
+        `fontfile='${fontFile}'`,
+        `fontsize=${fontSize}`,
+        `x=${x}`,
+        `y=${y}`
+    ];
 
-        if (enableExpr) {
-            baseCommand.push(`enable='${enableExpr}'`);
-        }
+    if (enableExpr) {
+        baseCommand.push(`enable='${enableExpr}'`);
+    }
 
-        return baseCommand.join(':');
-    }).join(',');
+    // Create single drawtext command with all effects
+    return [
+        // Outer glow
+        [...baseCommand, `fontcolor=white@0.08`, `borderw=20`, `bordercolor=white@0.05`].join(':'),
+        // Medium glow
+        [...baseCommand, `fontcolor=white@0.15`, `borderw=12`, `bordercolor=white@0.1`].join(':'),
+        // Inner glow
+        [...baseCommand, `fontcolor=white@0.3`, `borderw=6`, `bordercolor=white@0.2`].join(':'),
+        // Main text
+        [...baseCommand, `fontcolor=${color}`, `borderw=2`, `bordercolor=white@0.4`].join(':')
+    ].join(',');
 }
 
 function createHighlightedText(lines, isFirstTranscript, fontSize, fontFile, yOffset, enableExpr) {
@@ -117,38 +123,29 @@ function createHighlightedText(lines, isFirstTranscript, fontSize, fontFile, yOf
     const lineHeight = fontSize * TEXT_CONFIG.lineHeightMultiplier;
     
     lines.forEach((line, lineIndex) => {
-        // Calculate vertical position for each line
         const baseY = isFirstTranscript ? 
             TEXT_CONFIG.textVerticalOffset.first : 
             TEXT_CONFIG.textVerticalOffset.second;
         
         const lineY = `(h/2)${baseY}+${lineIndex * lineHeight}`;
         
-        // Process words in the line
-        const words = line.map((wordObj, wordIndex) => {
-            const isHighlighted = isFirstTranscript ? 
-                (lineIndex === lines.length - 1 && wordIndex >= line.length - 2) : 
-                (lineIndex === 0 && wordIndex === 0);
-            
-            return {
-                ...wordObj,
-                highlight: isHighlighted
-            };
-        });
-
-        // Create text command for each word
-        words.forEach((wordObj) => {
-            const color = wordObj.highlight ? TEXT_CONFIG.highlightColor : TEXT_CONFIG.fontColor;
-            drawCommands.push(createGlowEffects(
-                wordObj.word,
-                '(w-tw)/2',
-                lineY,
-                fontSize,
-                color,
-                fontFile,
-                enableExpr
-            ));
-        });
+        // Combine words into a single line
+        const lineText = line.map(wordObj => wordObj.word).join(' ');
+        const isHighlightedLine = isFirstTranscript ? 
+            (lineIndex === lines.length - 1) : 
+            (lineIndex === 0);
+        
+        const color = isHighlightedLine ? TEXT_CONFIG.highlightColor : TEXT_CONFIG.fontColor;
+        
+        drawCommands.push(createGlowEffects(
+            lineText,
+            '(w-text_w)/2', // Center horizontally
+            lineY,
+            fontSize,
+            color,
+            fontFile,
+            enableExpr
+        ));
     });
 
     return drawCommands.join(',');
@@ -366,14 +363,17 @@ app.post('/combine', async (req, res) => {
         const cleanedChannelName = cleanText(channelName);
         textFilters.push(createGlowEffects(
             cleanedChannelName,
-            '(w-tw)/2',
+            '(w-text_w)/2',
             `(h/2)+${TEXT_CONFIG.channelVerticalOffset}`,
             TEXT_CONFIG.channelFontSize,
             fontColor,
             fontFile
         ));
 
-        // Memory-optimized settings with audio fixes
+        // Create FFmpeg command
+        let command = ffmpeg(videoFile.path);
+
+        // Base output options
         const outputOptions = [
             '-c:v libx264',
             '-preset ultrafast',
@@ -382,27 +382,38 @@ app.post('/combine', async (req, res) => {
             '-bufsize 10M',
             '-movflags faststart',
             '-threads 2',
-            '-fs 524288000', // 500MB output limit
-            '-shortest' // Ensure audio and video sync
+            '-fs 524288000' // 500MB output limit
         ];
 
-        // Create FFmpeg command
-        let command = ffmpeg(videoFile.path);
+        // Configure filters
+        const filterComplex = textFilters.filter(Boolean);
 
-        // Add audio if provided
+        // Add filters if present
+        if (filterComplex.length > 0) {
+            command = command.videoFilters([
+                {
+                    filter: 'scale',
+                    options: 'iw:ih' // Maintain original dimensions
+                },
+                ...filterComplex.map(filter => ({
+                    filter: 'drawtext',
+                    options: filter
+                }))
+            ]);
+        }
+
+        // Handle audio
         if (audioFile) {
             command = command
                 .addInput(audioFile.path)
-                .audioCodec('aac')
-                .audioBitrate('192k')
                 .outputOptions([
                     '-map 0:v', // Map video from first input
                     '-map 1:a', // Map audio from second input
                     '-c:a aac',  // Use AAC codec for audio
-                    '-strict experimental' // Allow experimental codecs
+                    '-b:a 192k', // Set audio bitrate
+                    '-shortest' // Ensure audio and video sync
                 ]);
         } else {
-            // If no new audio, preserve original video audio
             command = command
                 .outputOptions([
                     '-map 0:v', // Map video
@@ -411,10 +422,12 @@ app.post('/combine', async (req, res) => {
                 ]);
         }
 
-        // Configure output with filters
-        command = command
-            .outputOptions(outputOptions)
-            .videoFilters(textFilters.filter(Boolean).join(','));
+        // Add base output options
+        command = command.outputOptions(outputOptions);
+
+        // Debug logging
+        console.log('Filter commands:', filterComplex);
+        console.log('FFmpeg command options:', command._getArguments());
 
         // Process the video
         command
