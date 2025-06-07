@@ -1,9 +1,9 @@
 const express = require('express');
 const multer = require('multer');
 const ffmpeg = require('fluent-ffmpeg');
-const cors = require('cors');
-const path = require('path');
 const fs = require('fs-extra');
+const path = require('path');
+const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
@@ -11,14 +11,14 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Ensure directories exist
 const ensureDirectories = async () => {
-  await fs.ensureDir('./fonts');
   await fs.ensureDir('./uploads');
   await fs.ensureDir('./output');
+  await fs.ensureDir('./fonts');
 };
 
 // Configure multer for file uploads
@@ -34,13 +34,24 @@ const storage = multer.diskStorage({
 
 const upload = multer({ 
   storage: storage,
-  limits: {
-    fileSize: 500 * 1024 * 1024 // 500MB limit
-  }
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
 });
 
+// Memory cleanup function
+const cleanupFiles = async (files) => {
+  for (const file of files) {
+    try {
+      if (await fs.pathExists(file)) {
+        await fs.remove(file);
+      }
+    } catch (error) {
+      console.error(`Error cleaning up file ${file}:`, error);
+    }
+  }
+};
+
 // Text processing functions
-function createChannelNameDrawText(channelName, fontFile, fontColor, channelFontSize = 40, channelVerticalOffset = 400) {
+function createChannelNameDrawText(channelName, fontFile, fontColor) {
   const cleanChannelName = channelName
     .replace(/['"]/g, '')
     .replace(/[:]/g, ' ')
@@ -49,6 +60,8 @@ function createChannelNameDrawText(channelName, fontFile, fontColor, channelFont
     .replace(/\s+/g, ' ')
     .trim();
 
+  const channelFontSize = 40;
+  const channelVerticalOffset = 400;
   const y = `(h/2)+${channelVerticalOffset}`;
   const drawTextCommands = [];
 
@@ -56,17 +69,17 @@ function createChannelNameDrawText(channelName, fontFile, fontColor, channelFont
   drawTextCommands.push(
     `drawtext=text='${cleanChannelName}':fontsize=${channelFontSize}:fontcolor=white@0.08:x=(w-tw)/2:y=${y}:fontfile='${fontFile}':borderw=10:bordercolor=white@0.05`
   );
-  
+
   // Medium glow
   drawTextCommands.push(
     `drawtext=text='${cleanChannelName}':fontsize=${channelFontSize}:fontcolor=white@0.15:x=(w-tw)/2:y=${y}:fontfile='${fontFile}':borderw=6:bordercolor=white@0.1`
   );
-  
+
   // Inner glow
   drawTextCommands.push(
     `drawtext=text='${cleanChannelName}':fontsize=${channelFontSize}:fontcolor=white@0.3:x=(w-tw)/2:y=${y}:fontfile='${fontFile}':borderw=3:bordercolor=white@0.2`
   );
-  
+
   // Main text
   drawTextCommands.push(
     `drawtext=text='${cleanChannelName}':fontsize=${channelFontSize}:fontcolor=${fontColor}:x=(w-tw)/2:y=${y}:fontfile='${fontFile}':borderw=1:bordercolor=white@0.4`
@@ -84,10 +97,10 @@ function transcriptToDrawText(transcript, enableExpr, isFirstTranscript, fontSiz
   
   const avgCharWidth = fontSize * 0.6;
   const maxCharsPerLine = Math.floor(videoWidth / avgCharWidth);
-  
+
   const cleanTranscript = transcript.trim();
   const words = cleanTranscript.split(' ').filter(word => word.length > 0);
-  
+
   if (words.length === 0) return '';
 
   // Determine which words to highlight
@@ -108,7 +121,7 @@ function transcriptToDrawText(transcript, enableExpr, isFirstTranscript, fontSiz
   words.forEach(word => {
     const wordLength = word.length;
     const potentialLength = currentCharCount + (currentLine.length > 0 ? 1 : 0) + wordLength;
-    
+
     if (potentialLength <= maxCharsPerLine) {
       currentLine.push({
         word: word,
@@ -138,7 +151,7 @@ function transcriptToDrawText(transcript, enableExpr, isFirstTranscript, fontSiz
     const y = yOffset >= 0 ? `(h/2)+${yOffset}` : `(h/2)${yOffset}`;
 
     const hasHighlighted = line.some(wordObj => wordObj.highlight);
-    
+
     if (!hasHighlighted) {
       const lineText = line.map(w => w.word).join(' ');
       const cleanLine = lineText
@@ -164,7 +177,7 @@ function transcriptToDrawText(transcript, enableExpr, isFirstTranscript, fontSiz
       );
     } else {
       const fullLineText = line.map(w => w.word).join(' ');
-      
+
       line.forEach((wordObj, wordIndexInLine) => {
         const cleanWord = wordObj.word
           .replace(/['"]/g, '')
@@ -176,14 +189,14 @@ function transcriptToDrawText(transcript, enableExpr, isFirstTranscript, fontSiz
         if (cleanWord) {
           const textBeforeWord = line.slice(0, wordIndexInLine).map(w => w.word).join(' ');
           const spacesBeforeWord = textBeforeWord.length > 0 ? textBeforeWord.length + 1 : 0;
-          
+
           const charWidth = fontSize * 0.55;
           const pixelOffset = Math.round(spacesBeforeWord * charWidth);
-          
+
           const fullLineLength = fullLineText.length;
           const fullLineWidth = Math.round(fullLineLength * charWidth);
           const lineStartX = `(w-${fullLineWidth})/2`;
-          
+
           const xPos = pixelOffset > 0 ? `${lineStartX}+${pixelOffset}` : lineStartX;
           const color = wordObj.highlight ? highlightColor : fontColor;
           const glowColor = wordObj.highlight ? highlightColor : 'white';
@@ -209,25 +222,13 @@ function transcriptToDrawText(transcript, enableExpr, isFirstTranscript, fontSiz
   return drawTextCommands.join(',');
 }
 
-// API Routes
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'FFmpeg API is running',
-    endpoints: {
-      'POST /process': 'Process video with text overlays',
-      'GET /health': 'Health check'
-    }
-  });
-});
-
-app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
-});
-
-app.post('/process', upload.fields([
+// Main API endpoint
+app.post('/process-video', upload.fields([
   { name: 'video', maxCount: 1 },
   { name: 'audio', maxCount: 1 }
 ]), async (req, res) => {
+  const filesToCleanup = [];
+  
   try {
     const { 
       transcript1, 
@@ -238,21 +239,21 @@ app.post('/process', upload.fields([
       highlightColor = '#98FBCB' 
     } = req.body;
 
-    if (!req.files || !req.files.video || !req.files.audio) {
+    if (!req.files.video || !req.files.audio) {
       return res.status(400).json({ error: 'Video and audio files are required' });
     }
 
-    const videoFile = req.files.video[0];
-    const audioFile = req.files.audio[0];
-    const outputFileName = `processed-${uuidv4()}.mp4`;
-    const outputPath = path.join('./output', outputFileName);
+    const videoPath = req.files.video[0].path;
+    const audioPath = req.files.audio[0].path;
+    const outputPath = path.join('./output', `processed-${uuidv4()}.mp4`);
+    const fontFile = path.join('./fonts', 'Frontage-Condensed-Bold.ttf');
 
-    // Use a default font or the first available font in fonts folder
-    const fontsDir = './fonts';
-    const fontFiles = await fs.readdir(fontsDir).catch(() => []);
-    const fontFile = fontFiles.length > 0 ? 
-      path.join(fontsDir, fontFiles[0]) : 
-      '/System/Library/Fonts/Arial.ttf'; // Fallback system font
+    filesToCleanup.push(videoPath, audioPath, outputPath);
+
+    // Check if font file exists
+    if (!await fs.pathExists(fontFile)) {
+      return res.status(400).json({ error: 'Font file not found' });
+    }
 
     const parsedFontSize = parseInt(fontSize);
 
@@ -261,72 +262,69 @@ app.post('/process', upload.fields([
     const drawText2 = transcriptToDrawText(transcript2, "gte(t,8.5)", false, parsedFontSize, fontColor, highlightColor, fontFile);
     const channelDrawText = createChannelNameDrawText(channelName, fontFile, fontColor);
 
-    // Combine filters
     const drawTextFilters = [drawText1, drawText2, channelDrawText].filter(Boolean);
     const drawText = drawTextFilters.length > 0 ? drawTextFilters.join(',') : '';
 
     // Process video with FFmpeg
-    const command = ffmpeg()
-      .input(videoFile.path)
-      .input(audioFile.path)
-      .outputOptions([
-        '-c:v libx264',
-        '-c:a aac',
-        '-map 0:v:0',
-        '-map 1:a:0',
-        '-shortest'
-      ]);
+    await new Promise((resolve, reject) => {
+      let command = ffmpeg(videoPath)
+        .input(audioPath)
+        .outputOptions([
+          '-c:v libx264',
+          '-preset fast',
+          '-crf 23',
+          '-c:a aac',
+          '-b:a 128k',
+          '-movflags +faststart',
+          '-threads 2'
+        ]);
 
-    if (drawText) {
-      command.videoFilters(drawText);
-    }
+      if (drawText) {
+        command = command.complexFilter([
+          `[0:v]${drawText}[v]`
+        ]).outputOptions(['-map [v]', '-map 1:a']);
+      } else {
+        command = command.outputOptions(['-map 0:v', '-map 1:a']);
+      }
 
-    command
-      .output(outputPath)
-      .on('start', (commandLine) => {
-        console.log('FFmpeg process started:', commandLine);
-      })
-      .on('progress', (progress) => {
-        console.log('Processing: ' + progress.percent + '% done');
-      })
-      .on('end', async () => {
-        console.log('Processing finished successfully');
-        
-        // Clean up uploaded files
-        await fs.remove(videoFile.path).catch(console.error);
-        await fs.remove(audioFile.path).catch(console.error);
-        
-        // Send the processed video
-        res.download(outputPath, outputFileName, async (err) => {
-          if (err) {
-            console.error('Download error:', err);
-          }
-          // Clean up output file after download
-          await fs.remove(outputPath).catch(console.error);
-        });
-      })
-      .on('error', async (err) => {
-        console.error('FFmpeg error:', err);
-        
-        // Clean up files on error
-        await fs.remove(videoFile.path).catch(console.error);
-        await fs.remove(audioFile.path).catch(console.error);
-        await fs.remove(outputPath).catch(console.error);
-        
-        res.status(500).json({ 
-          error: 'Video processing failed', 
-          details: err.message 
-        });
-      })
-      .run();
+      command
+        .output(outputPath)
+        .on('start', (commandLine) => {
+          console.log('FFmpeg process started:', commandLine);
+        })
+        .on('progress', (progress) => {
+          console.log('Processing: ' + progress.percent + '% done');
+        })
+        .on('end', () => {
+          console.log('Processing finished successfully');
+          resolve();
+        })
+        .on('error', (err) => {
+          console.error('FFmpeg error:', err);
+          reject(err);
+        })
+        .run();
+    });
+
+    // Send the processed video
+    res.download(outputPath, 'processed-video.mp4', async (err) => {
+      if (err) {
+        console.error('Download error:', err);
+      }
+      // Cleanup files after download
+      await cleanupFiles(filesToCleanup);
+    });
 
   } catch (error) {
-    console.error('Server error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error', 
-      details: error.message 
-    });
+    console.error('Processing error:', error);
+    await cleanupFiles(filesToCleanup);
+    res.status(500).json({ error: 'Video processing failed', details: error.message });
   }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 // Start server
