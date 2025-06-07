@@ -9,9 +9,6 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Memory optimization
-const LOW_MEMORY_MODE = true; // Enable memory optimizations
-
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -65,7 +62,7 @@ const storage = multer.diskStorage({
 const upload = multer({
     storage: storage,
     limits: {
-        fileSize: 100 * 1024 * 1024, // 100MB limit
+        fileSize: 50 * 1024 * 1024, // 50MB limit
         files: 2 // Max 2 files (video + audio)
     }
 });
@@ -120,7 +117,7 @@ app.post('/combine', upload.fields([
             memoryUsage: process.memoryUsage()
         });
 
-        // Create FFmpeg command with memory optimizations
+        // Create FFmpeg command
         let command = ffmpeg(videoFile.path);
 
         // Memory-optimized settings
@@ -129,28 +126,17 @@ app.post('/combine', upload.fields([
             '-preset ultrafast', // Faster encoding, less memory
             '-crf 28', // Lower quality, less memory
             '-movflags faststart',
-            '-memory_limit 400MB', // Limit FFmpeg memory usage
+            '-threads 2' // Limit CPU threads
         ];
-
-        if (LOW_MEMORY_MODE) {
-            outputOptions.push(
-                '-threads 2', // Limit CPU threads
-                '-tile-columns 6',
-                '-frame-parallel 0',
-                '-auto-alt-ref 0'
-            );
-        }
 
         // Add audio if provided
         if (audioFile) {
-            command = command.addInput(audioFile.path);
-            if (LOW_MEMORY_MODE) {
-                command = command.audioCodec('aac')
-                    .audioBitrate('128k'); // Lower audio quality
-            }
+            command = command.addInput(audioFile.path)
+                .audioCodec('aac')
+                .audioBitrate('128k'); // Lower audio quality
         }
 
-        // Configure output with memory optimizations
+        // Configure output
         command = command.outputOptions(outputOptions);
 
         // Add text overlay if provided
@@ -235,4 +221,3 @@ process.on('unhandledRejection', (err) => {
     console.error('Unhandled Rejection:', err);
     cleanupOldFiles(); // Cleanup before exit
 });
-
