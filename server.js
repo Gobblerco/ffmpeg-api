@@ -20,15 +20,20 @@ const TEXT_CONFIG = {
     channelFontSize: 40,
     fontColor: "white",
     highlightColor: "#98FBCB",
-    lineHeightMultiplier: 1.2,
-    textVerticalOffset: -500,
+    lineHeightMultiplier: 2.5, // Increased for more spacing
+    textVerticalOffset: -300, // Adjusted for better positioning
     channelVerticalOffset: 400,
+    lineSpacing: 100, // Explicit line spacing
     glowLevels: [
         { opacity: 0.08, borderWidth: 20, borderOpacity: 0.05 },
         { opacity: 0.15, borderWidth: 12, borderOpacity: 0.1 },
         { opacity: 0.3, borderWidth: 6, borderOpacity: 0.2 },
         { opacity: 1, borderWidth: 2, borderOpacity: 0.4 }
-    ]
+    ],
+    transcriptTiming: {
+        first: 'lt(t,7.5)',
+        second: 'gte(t,8.5)'
+    }
 };
 
 // Create directories
@@ -106,16 +111,18 @@ function createGlowEffects(text, x, y, fontSize, color, fontFile, enableExpr = n
 
 function createHighlightedText(lines, isFirstTranscript, fontSize, fontFile, yOffset, enableExpr) {
     const drawCommands = [];
-    const totalHeight = lines.length * fontSize * TEXT_CONFIG.lineHeightMultiplier;
-    
+    const lineHeight = fontSize * TEXT_CONFIG.lineHeightMultiplier;
+    const totalHeight = lines.length * lineHeight;
+    const startY = `(h/2)${yOffset}-(${totalHeight}/2)`; // Center vertically
+
     lines.forEach((line, lineIndex) => {
-        const y = `(h/2)${yOffset}+${lineIndex * fontSize * TEXT_CONFIG.lineHeightMultiplier}`;
+        const lineY = `${startY}+${lineIndex * lineHeight}`;
         
-        // Determine which words to highlight
+        // Process each word in the line
         const words = line.map((wordObj, wordIndex) => {
             const isHighlighted = isFirstTranscript ? 
-                (lineIndex === lines.length - 1 && wordIndex >= line.length - 2) : // Last two words of last line
-                (lineIndex === 0 && wordIndex === 0); // First word of first line
+                (lineIndex === lines.length - 1 && wordIndex >= line.length - 2) : // Last two words
+                (lineIndex === 0 && wordIndex === 0); // First word
             
             return {
                 ...wordObj,
@@ -123,14 +130,14 @@ function createHighlightedText(lines, isFirstTranscript, fontSize, fontFile, yOf
             };
         });
 
-        // Calculate positions for each word
-        let currentX = '(w-tw)/2'; // Center the line
-        words.forEach((wordObj) => {
+        // Create separate commands for regular and highlighted words
+        let currentX = '(w-tw)/2';
+        words.forEach((wordObj, wordIndex) => {
             const color = wordObj.highlight ? TEXT_CONFIG.highlightColor : TEXT_CONFIG.fontColor;
             drawCommands.push(createGlowEffects(
                 wordObj.word,
                 currentX,
-                y,
+                lineY,
                 fontSize,
                 color,
                 fontFile,
@@ -284,7 +291,7 @@ app.post('/combine', async (req, res) => {
         const outputFileName = `output_${uuidv4()}.mp4`;
         const outputPath = path.join(outputDir, outputFileName);
 
-        // Get video dimensions first
+        // Get video dimensions
         const videoInfo = await new Promise((resolve, reject) => {
             ffmpeg.ffprobe(videoFile.path, (err, metadata) => {
                 if (err) reject(err);
@@ -297,6 +304,7 @@ app.post('/combine', async (req, res) => {
 
         // Generate text filters
         const textFilters = [];
+        let currentVerticalOffset = TEXT_CONFIG.textVerticalOffset;
 
         // Process transcript1
         if (transcript1) {
@@ -307,10 +315,13 @@ app.post('/combine', async (req, res) => {
                 true,
                 parseInt(fontSize),
                 fontFile,
-                TEXT_CONFIG.textVerticalOffset,
-                'lt(t,7.5)'
+                currentVerticalOffset,
+                TEXT_CONFIG.transcriptTiming.first
             ));
         }
+
+        // Add spacing between transcripts
+        currentVerticalOffset += TEXT_CONFIG.lineSpacing;
 
         // Process transcript2
         if (transcript2) {
@@ -321,8 +332,8 @@ app.post('/combine', async (req, res) => {
                 false,
                 parseInt(fontSize),
                 fontFile,
-                TEXT_CONFIG.textVerticalOffset,
-                'gte(t,8.5)'
+                currentVerticalOffset,
+                TEXT_CONFIG.transcriptTiming.second
             ));
         }
 
